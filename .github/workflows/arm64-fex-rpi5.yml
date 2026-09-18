@@ -33,9 +33,10 @@ jobs:
       CONFIGURATION: ${{ inputs.configuration || 'Release' }}
 
     steps:
-      - name: Checkout ReactOS
+      - name: Checkout ReactOS known-good ARM64 source
         uses: actions/checkout@v6
         with:
+          ref: arm64-fex-known-good
           fetch-depth: 1
 
       - name: Prepare FEX submodule
@@ -135,6 +136,7 @@ jobs:
           set -euxo pipefail
           {
             echo "ReactOS commit: $(git rev-parse HEAD)"
+            echo "ReactOS source branch: arm64-fex-known-good"
             echo "FEX commit: $(git -C submodules/fex-arm64ec rev-parse HEAD)"
             echo "Configuration: $CONFIGURATION"
             echo "Target: ARM64 / NT 10"
