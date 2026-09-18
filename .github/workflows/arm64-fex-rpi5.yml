@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - main-nt10
+      - chatgpt-reactosimg-build-20260918
     paths:
       - .github/workflows/arm64-fex-rpi5.yml
 
