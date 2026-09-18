@@ -25,154 +25,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  reactos-arm64:
-    name: ReactOS ARM64 + FEX
-    runs-on: ubuntu-24.04
-
-    env:
-      CONFIGURATION: ${{ inputs.configuration || 'Release' }}
-
-    steps:
-      - name: Checkout ReactOS known-good ARM64 source
-        uses: actions/checkout@v6
-        with:
-          ref: arm64-fex-known-good
-          fetch-depth: 1
-
-      - name: Prepare FEX submodule
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git submodule sync -- submodules/fex-arm64ec
-          git submodule update --init --recursive --depth 1 submodules/fex-arm64ec
-          git -C submodules/fex-arm64ec rev-parse HEAD
-
-      - name: Install host build tools
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            ca-certificates \
-            ccache \
-            cmake \
-            curl \
-            flex \
-            bison \
-            gawk \
-            ninja-build \
-            pkg-config \
-            python3 \
-            tar \
-            wget \
-            xz-utils
-
-      - name: Install RosBE
-        shell: bash
-        run: |
-          set -euxo pipefail
-          curl -fsSL \
-            https://raw.githubusercontent.com/ahmedarif193/winget-rosbe/main/rosbe-unix-bootstrap.sh \
-            -o /tmp/rosbe-bootstrap.sh
-          sh /tmp/rosbe-bootstrap.sh
-          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
-          "$HOME/.local/opt/rosbe/llvm-mingw/bin/arm64ec-w64-mingw32-clang" --version
-          "$HOME/.local/opt/rosbe/llvm-mingw/bin/arm64ec-w64-mingw32-clang++" --version
-
-      - name: Configure ARM64 build
-        id: configure
-        shell: bash
-        run: |
-          set -euxo pipefail
-          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
-
-          FLAGS="--clang"
-          if [ "$CONFIGURATION" = "Release" ]; then
-            FLAGS="$FLAGS -r"
-          fi
-
-          ./configure.sh $FLAGS -a arm64 \
-            -DREACTOS_TARGET_NT=0xA00 \
-            -DENABLE_CCACHE=1 \
-            -DENABLE_FEX_ARM64EC=ON
-
-          CFG_LOWER="$(echo "$CONFIGURATION" | tr '[:upper:]' '[:lower:]')"
-          OUTDIR="output-Clang-arm64-$CFG_LOWER"
-
-          echo "outdir=$OUTDIR" >> "$GITHUB_OUTPUT"
-          echo "OUTDIR=$OUTDIR" >> "$GITHUB_ENV"
-
-      - name: Build generated XDK headers first
-        shell: bash
-        run: |
-          set -o pipefail
-          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
-          ninja -C "$OUTDIR" -v xdk 2>&1 | tee xdk-build.log
-          test -s "$OUTDIR/sdk/include/psdk/winnt.h"
-          ls -lh "$OUTDIR/sdk/include/psdk/winnt.h"
-
-      - name: Build FEX ARM64EC
-        shell: bash
-        run: |
-          set -o pipefail
-          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
-          ninja -C "$OUTDIR" -v fex-arm64ec-build 2>&1 | tee fex-build.log
-          test -s "$OUTDIR/submodules/arm64ecfex.dll"
-          ls -lh "$OUTDIR/submodules/arm64ecfex.dll"
-
-      - name: Build ReactOS boot and live ISOs
-        shell: bash
-        run: |
-          set -o pipefail
-          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
-          ninja -C "$OUTDIR" bootcd livecd -k0 2>&1 | tee reactos-image-build.log
-          test -s "$OUTDIR/bootcd.iso"
-          test -s "$OUTDIR/livecd.iso"
-
-      - name: Record build information
-        shell: bash
-        run: |
-          set -euxo pipefail
-          {
-            echo "ReactOS commit: $(git rev-parse HEAD)"
-            echo "ReactOS source branch: arm64-fex-known-good"
-            echo "FEX commit: $(git -C submodules/fex-arm64ec rev-parse HEAD)"
-            echo "Configuration: $CONFIGURATION"
-            echo "Target: ARM64 / NT 10"
-          } > BUILD-INFO.txt
-
-          sha256sum \
-            "$OUTDIR/bootcd.iso" \
-            "$OUTDIR/livecd.iso" \
-            "$OUTDIR/submodules/arm64ecfex.dll" \
-            > SHA256SUMS.txt
-
-      - name: Upload ReactOS ARM64 images
-        uses: actions/upload-artifact@v7
-        with:
-          name: reactos-arm64-fex-${{ env.CONFIGURATION }}-${{ github.sha }}
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            ${{ env.OUTDIR }}/bootcd.iso
-            ${{ env.OUTDIR }}/livecd.iso
-            ${{ env.OUTDIR }}/submodules/arm64ecfex.dll
-            BUILD-INFO.txt
-            SHA256SUMS.txt
-
-      - name: Upload ReactOS build logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: reactos-arm64-fex-logs-${{ github.sha }}
-          if-no-files-found: ignore
-          retention-days: 7
-          path: |
-            xdk-build.log
-            fex-build.log
-            reactos-image-build.log
-
   rpi5-uefi:
     name: Raspberry Pi 5 UEFI
     runs-on: ubuntu-24.04
@@ -249,3 +101,226 @@ jobs:
             bcm2712-rpi-5-b.dtb
             UEFI-SOURCE-REVISIONS.txt
             UEFI-SHA256SUMS.txt
+
+  reactos-arm64:
+    name: ReactOS RPi5 ARM64 + FEX + Flash Image
+    needs: rpi5-uefi
+    runs-on: ubuntu-24.04
+
+    env:
+      CONFIGURATION: ${{ inputs.configuration || 'Release' }}
+
+    steps:
+      - name: Checkout ReactOS known-good ARM64 source
+        uses: actions/checkout@v6
+        with:
+          ref: arm64-fex-known-good
+          fetch-depth: 1
+
+      - name: Download freshly built RPi5 UEFI
+        uses: actions/download-artifact@v8
+        with:
+          name: rpi5-uefi-release-${{ github.sha }}
+          path: _rpi5_uefi
+
+      - name: Inject current RPi5 UEFI into ReactOS boot media
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s _rpi5_uefi/RPI_EFI.fd
+          test -s _rpi5_uefi/bcm2712-rpi-5-b.dtb
+          cp _rpi5_uefi/RPI_EFI.fd media/boot/rpi/RPI5_EFI.fd
+          cp _rpi5_uefi/bcm2712-rpi-5-b.dtb media/boot/rpi/bcm2712-rpi-5-b.dtb
+          sha256sum media/boot/rpi/RPI5_EFI.fd media/boot/rpi/bcm2712-rpi-5-b.dtb
+
+      - name: Prepare FEX submodule
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git submodule sync -- submodules/fex-arm64ec
+          git submodule update --init --recursive --depth 1 submodules/fex-arm64ec
+          git -C submodules/fex-arm64ec rev-parse HEAD
+
+      - name: Install host build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ca-certificates \
+            ccache \
+            cmake \
+            curl \
+            flex \
+            bison \
+            gawk \
+            ninja-build \
+            pkg-config \
+            python3 \
+            tar \
+            unzip \
+            wget \
+            xz-utils \
+            zip
+
+      - name: Install RosBE
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fsSL \
+            https://raw.githubusercontent.com/ahmedarif193/winget-rosbe/main/rosbe-unix-bootstrap.sh \
+            -o /tmp/rosbe-bootstrap.sh
+          sh /tmp/rosbe-bootstrap.sh
+          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
+          "$HOME/.local/opt/rosbe/llvm-mingw/bin/arm64ec-w64-mingw32-clang" --version
+          "$HOME/.local/opt/rosbe/llvm-mingw/bin/arm64ec-w64-mingw32-clang++" --version
+
+      - name: Configure Raspberry Pi 5 ARM64 build
+        id: configure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
+
+          FLAGS="--clang"
+          if [ "$CONFIGURATION" = "Release" ]; then
+            FLAGS="$FLAGS -r"
+          fi
+
+          ./configure.sh $FLAGS -a arm64 \
+            -DREACTOS_TARGET_NT=0xA00 \
+            -DROSCONFIG_PROFILE=rpi5 \
+            -DREACTOS_GRAPHICS_DRIVER_MODEL=WDDM \
+            -DREACTOS_WDDM_LEVEL=2.0 \
+            -DENABLE_CCACHE=1 \
+            -DENABLE_FEX_ARM64EC=ON
+
+          CFG_LOWER="$(echo "$CONFIGURATION" | tr '[:upper:]' '[:lower:]')"
+          OUTDIR="output-Clang-arm64-$CFG_LOWER"
+
+          echo "outdir=$OUTDIR" >> "$GITHUB_OUTPUT"
+          echo "OUTDIR=$OUTDIR" >> "$GITHUB_ENV"
+
+          grep -E 'ROSCONFIG_PROFILE|RPI_SUPPORT|RPI5_SUPPORT|REACTOS_GRAPHICS_DRIVER_MODEL|REACTOS_WDDM_LEVEL' \
+            "$OUTDIR/CMakeCache.txt" || true
+
+      - name: Build generated XDK headers first
+        shell: bash
+        run: |
+          set -o pipefail
+          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
+          ninja -C "$OUTDIR" -v xdk 2>&1 | tee xdk-build.log
+          test -s "$OUTDIR/sdk/include/psdk/winnt.h"
+          ls -lh "$OUTDIR/sdk/include/psdk/winnt.h"
+
+      - name: Build FEX ARM64EC
+        shell: bash
+        run: |
+          set -o pipefail
+          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
+          ninja -C "$OUTDIR" -v fex-arm64ec-build 2>&1 | tee fex-build.log
+          test -s "$OUTDIR/submodules/arm64ecfex.dll"
+          ls -lh "$OUTDIR/submodules/arm64ecfex.dll"
+
+      - name: Build ReactOS ISOs and Raspberry Pi 5 disk image
+        shell: bash
+        run: |
+          set -o pipefail
+          . "$HOME/.local/opt/rosbe/rosbe-env.sh"
+          ninja -C "$OUTDIR" bootcd reactosimg -k0 2>&1 | tee reactos-image-build.log
+          test -s "$OUTDIR/bootcd.iso"
+          test -s "$OUTDIR/livecd.iso"
+          test -s "$OUTDIR/ReactOS.img"
+          ls -lh "$OUTDIR/bootcd.iso" "$OUTDIR/livecd.iso" "$OUTDIR/ReactOS.img"
+
+      - name: Package flashable Raspberry Pi 5 image
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          IMAGE_BASE="ReactOS-RPi5-ARM64-FEX-$CONFIGURATION"
+          cp "$OUTDIR/ReactOS.img" "$IMAGE_BASE.img"
+
+          sha256sum "$IMAGE_BASE.img" > RPI5-IMAGE-SHA256SUMS.txt
+          zip -6 "$IMAGE_BASE.img.zip" "$IMAGE_BASE.img"
+          unzip -t "$IMAGE_BASE.img.zip"
+          sha256sum "$IMAGE_BASE.img.zip" >> RPI5-IMAGE-SHA256SUMS.txt
+
+          cat > RPI5-IMAGE-README.txt <<'EOF'
+          ReactOS Raspberry Pi 5 ARM64 + FEX experimental image
+
+          The .img is produced by ReactOS's native reactosimg target:
+          - MBR partition table
+          - FAT32 Raspberry Pi / UEFI boot partition
+          - Raspberry Pi firmware and overlays
+          - freshly built RPI5 UEFI firmware
+          - EFI/BOOT/bootaa64.efi (ReactOS FreeLoader)
+          - NTFS ReactOS system partition
+          - Raspberry Pi 5 ReactOS profile
+          - FEX ARM64EC enabled
+
+          Flash the extracted .img to an SD card or USB drive.
+          This is experimental bring-up software; boot and hardware support are not guaranteed.
+          EOF
+
+          rm "$IMAGE_BASE.img"
+          ls -lh "$IMAGE_BASE.img.zip" RPI5-IMAGE-SHA256SUMS.txt
+
+      - name: Record build information
+        shell: bash
+        run: |
+          set -euxo pipefail
+          {
+            echo "ReactOS commit: $(git rev-parse HEAD)"
+            echo "ReactOS source branch: arm64-fex-known-good"
+            echo "ReactOS profile: rpi5"
+            echo "FEX commit: $(git -C submodules/fex-arm64ec rev-parse HEAD)"
+            echo "Configuration: $CONFIGURATION"
+            echo "Target: Raspberry Pi 5 / ARM64 / NT 10 / WDDM 2.0"
+            echo "Injected RPi5 UEFI SHA256: $(sha256sum media/boot/rpi/RPI5_EFI.fd | awk '{print $1}')"
+          } > BUILD-INFO.txt
+
+          sha256sum \
+            "$OUTDIR/bootcd.iso" \
+            "$OUTDIR/livecd.iso" \
+            "$OUTDIR/submodules/arm64ecfex.dll" \
+            > SHA256SUMS.txt
+
+      - name: Upload flashable Raspberry Pi 5 image
+        uses: actions/upload-artifact@v7
+        with:
+          name: reactos-rpi5-flash-image-${{ env.CONFIGURATION }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: |
+            ReactOS-RPi5-ARM64-FEX-${{ env.CONFIGURATION }}.img.zip
+            RPI5-IMAGE-README.txt
+            RPI5-IMAGE-SHA256SUMS.txt
+            BUILD-INFO.txt
+
+      - name: Upload ReactOS ARM64 ISOs and FEX
+        uses: actions/upload-artifact@v7
+        with:
+          name: reactos-rpi5-arm64-fex-${{ env.CONFIGURATION }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ env.OUTDIR }}/bootcd.iso
+            ${{ env.OUTDIR }}/livecd.iso
+            ${{ env.OUTDIR }}/submodules/arm64ecfex.dll
+            BUILD-INFO.txt
+            SHA256SUMS.txt
+
+      - name: Upload ReactOS build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reactos-rpi5-arm64-fex-logs-${{ github.sha }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            xdk-build.log
+            fex-build.log
+            reactos-image-build.log
